@@ -16,6 +16,11 @@ Integrated with authentic images from the benchmark **ExDark (Exclusively Dark)*
 - **Histogram-Based Enhancement:**
   - **Global Histogram Equalization:** Spreads intensities across the full $[0, 255]$ spectrum.
   - **CLAHE (Contrast Limited Adaptive Histogram Equalization):** Performs tile-based adaptive histogram equalization with contrast limiting to prevent noise amplification.
+- **Frequency-Domain Enhancement (Fourier Transform):**
+  - **Homomorphic Filtering (2D-FFT Retinex Model):** Decomposes image into illumination and reflectance in the 2D frequency domain, suppressing non-uniform lighting while boosting high-frequency object details.
+  - **2D Fourier Spectrum Magnitude:** Real-time visual comparison of $\log(1 + |F(u,v)|)$ centered spectrums before and after filtering.
+- **Combined Hybrid Pipeline:** Gamma + CLAHE + Unsharp Masking for comprehensive multi-stage enhancement.
+- **Interactive Before/After Wipe Slider:** Draggable vertical split-screen slider (Juxtapose) for seamless visual comparison alongside standard side-by-side view.
 - **Dual Processing Modes:** Grayscale (standard DIP) and Color (YCrCb luminance enhancement preserving color chrominance).
 - **Comparison Views:** Single method deep-dive or **"Compare All Methods Side-by-Side"** grid with statistical tables and histograms.
 - **Processed Image Download:** Instant 1-click PNG download.
@@ -36,21 +41,38 @@ Integrated with authentic images from the benchmark **ExDark (Exclusively Dark)*
 - **Benchmark Table:** Comparative table evaluating Noisy, Filter $3 \times 3$, and Filter $5 \times 5$ against the clean reference.
 - **Multi-Filter Benchmark:** Side-by-side comparison of all 3 filters with real-time PSNR and SSIM metrics.
 
+### 3. CCTV Video (.mp4) Stream Processing (Section 3)
+- **Frame-by-Frame Streaming Pipeline:** Applies YCrCb luminance enhancement across moving video frames.
+- **Real-Time Throughput Benchmarking:** Measures actual processing speed in **FPS (Frames Per Second)** and frame latency in **milliseconds (ms)**.
+- **Forensic OSD HUD:** Burns timestamp, camera identification, resolution, and live status into output video.
+- **Side-by-Side Synchronized Playback:** Instant dual-player visual comparison of raw night footage vs. enhanced stream.
+- **Instant Video Download:** 1-click download of processed `.mp4` video.
+
+### 4. Downstream Computer Vision Benchmark (Section 4)
+- **Proof-of-Utility Validation:** Evaluates whether enhancement enables automated security AI to detect hidden suspects and vehicles.
+- **Neural Detector Integration:** Powered by an ultra-fast, lightweight NanoDet neural network detecting 80 COCO classes (People, Cars, Bikes, Buses, etc.).
+- **Automated Detection Scorecard:** Quantifies target recovery (e.g. 0 raw targets $\rightarrow$ 3 recovered targets) and confidence improvement.
+- **Detailed Target Manifest:** Complete list of identified security entities with bounding box coordinates and detection confidence.
+
 ---
 
 ## 📂 Project Architecture
 
 ```
 cctv-night-footage-enhancer/
-├── app.py                  # Main Streamlit interactive web application
+├── app.py                  # Main Streamlit interactive web application (4 tabs)
 ├── enhancement.py          # Spatial-domain point & histogram enhancement algorithms
 ├── denoising.py            # Noise generation (Gaussian, S&P) & spatial filters
 ├── evaluation.py           # Objective metrics: MSE, PSNR, SSIM
+├── video_processor.py      # Video stream processing, FPS benchmark & HUD engine
+├── detection.py            # Downstream object & pedestrian detection audit engine
+├── models/                 # Lightweight ONNX detection models (NanoDet)
 ├── download_exdark.py      # Automated downloader for authentic ExDark dataset images
 ├── setup_dataset.py        # Helper to initialize dataset images & CCTV samples
 ├── requirements.txt        # Minimal dependency list
 ├── README.md               # Documentation and viva presentation guide
-└── sample_images/          # Benchmark image repository
+└── sample_images/          # Benchmark image & video repository
+    ├── cctv_night_patrol.mp4 # Pre-rendered CCTV night surveillance video clip
     ├── cctv_street.png     # Synthetic CCTV scenes with camera HUD/timestamps
     ├── cctv_parking.png
     ├── cctv_alley.png
@@ -106,7 +128,24 @@ $$s = 255 \cdot \left(\frac{r}{255}\right)^\gamma$$
 - $\gamma = 1$: Identity (no change).
 - $\gamma > 1$: Curve bows downward, compressing dark intensities (darkens).
 
-### 4. Mean Filter vs Gaussian Filter vs Median Filter
+### 4. Frequency-Domain Homomorphic Filtering (2D-FFT Retinex Model)
+Based on the image formation model:
+$$f(x, y) = i(x, y) \cdot r(x, y)$$
+where $i(x,y)$ represents scene illumination (low spatial frequencies) and $r(x,y)$ represents object reflectance (high spatial frequencies).
+
+Taking the natural logarithm converts multiplication to addition:
+$$\ln f(x, y) = \ln i(x, y) + \ln r(x, y)$$
+
+Applying 2D Fast Fourier Transform (FFT) and filtering with a high-frequency emphasis transfer function:
+$$H(u, v) = (\gamma_H - \gamma_L) \cdot \left[1 - \exp\left(-c \cdot \frac{D^2(u,v)}{D_0^2}\right)\right] + \gamma_L$$
+- $\gamma_L < 1$ (e.g., $0.5$): Attenuates low frequencies, eliminating uneven lighting and heavy shadows.
+- $\gamma_H > 1$ (e.g., $2.0$): Amplifies high frequencies, enhancing object edges, textures, and details.
+- $D_0$: Filter cutoff radius determining frequency transition bandwidth.
+- $c$: Sharpness control parameter.
+
+After inverse FFT ($\text{IFFT}$) and exponential mapping $\exp(\cdot) - 1$, dynamic range is restored via percentile scaling.
+
+### 5. Mean Filter vs Gaussian Filter vs Median Filter
 | Filter Type | Kernel Operation | Best Application | Edge Preservation |
 |---|---|---|---|
 | **Mean Filter** | Arithmetic average over $K \times K$ | Uniform / Gaussian noise | Low (causes blurring) |

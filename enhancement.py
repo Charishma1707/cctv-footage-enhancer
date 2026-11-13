@@ -169,28 +169,152 @@ def unsharp_mask(image: np.ndarray,
 
 
 # ═══════════════════════════════════════════════════════════
-#  COLOR IMAGE SUPPORT
+#  FREQUENCY-DOMAIN ENHANCEMENT (HOMOMORPHIC FILTERING)
 # ═══════════════════════════════════════════════════════════
 
-def enhance_color_image(image_bgr: np.ndarray,
+def homomorphic_filter(image: np.ndarray,
+                       gamma_low: float = 0.5,
+                       gamma_high: float = 2.0,
+                       d0: float = 30.0,
+                       c: float = 1.0) -> np.ndarray:
+    """
+    Apply Frequency-Domain Homomorphic Filtering based on Retinex illumination-reflectance model.
+
+    Model:
+      f(x, y) = i(x, y) * r(x, y)  (Illumination * Reflectance)
+      ln(f) = ln(i) + ln(r)        (Converts multiplicative model to additive)
+
+    Process:
+      1. Natural logarithm: z = ln(1 + image / 255)
+      2. 2D Fast Fourier Transform (FFT) to shift into frequency domain
+      3. High-frequency emphasis transfer function:
+         H(u,v) = (gamma_high - gamma_low) * [1 - exp(-c * (D^2 / D0^2))] + gamma_low
+         - Suppresses low frequencies (gamma_low < 1: evens out illumination/shadows)
+         - Amplifies high frequencies (gamma_high > 1: sharpens details and reflectance)
+      4. Inverse 2D FFT (IFFT) back to spatial domain
+      5. Exponential mapping: exp(Re(ifft)) - 1
+      6. Percentile-based dynamic range restoration to [0, 255]
+
+    Parameters:
+      gamma_low  : float - Low-frequency gain (0.2 - 0.9, default 0.5)
+      gamma_high : float - High-frequency gain (1.2 - 2.5, default 2.0)
+      d0         : float - Cutoff frequency radius in pixels (10 - 100, default 30.0)
+      c          : float - Sharpness coefficient of filter transition (default 1.0)
+    """
+    # Normalize channels
+    if image.ndim == 3 and image.shape[2] == 1:
+        image = image[:, :, 0]
+    elif image.ndim == 3 and image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+
+    # For 3-channel color, process luminance channel in YCrCb
+    if image.ndim == 3:
+        ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+        y, cr, cb = cv2.split(ycrcb)
+        y_filt = homomorphic_filter(y, gamma_low, gamma_high, d0, c)
+        return cv2.cvtColor(cv2.merge([y_filt, cr, cb]), cv2.COLOR_YCrCb2BGR)
+
+    img_float = image.astype(np.float64) / 255.0
+    img_log = np.log1p(img_float)
+
+    # 2D Fast Fourier Transform
+    fft = np.fft.fft2(img_log)
+    fft_shift = np.fft.fftshift(fft)
+
+    rows, cols = image.shape[:2]
+    crow, ccol = rows // 2, cols // 2
+    u = np.arange(rows) - crow
+    v = np.arange(cols) - ccol
+    U, V = np.meshgrid(u, v, indexing='ij')
+    D2 = U**2 + V**2
+
+    # High-frequency emphasis transfer function H(u,v)
+    H = (gamma_high - gamma_low) * (1.0 - np.exp(-c * (D2 / (d0**2 + 1e-6)))) + gamma_low
+
+    # Apply filter in frequency domain
+    filtered = fft_shift * H
+
+    # Inverse 2D FFT back to spatial domain
+    ifft_shift = np.fft.ifftshift(filtered)
+    ifft = np.fft.ifft2(ifft_shift)
+    real_part = np.real(ifft)
+
+    # Invert log transform via exponential
+    exp_img = np.expm1(real_part)
+
+    # Robust normalization across dynamic range
+    p1, p99 = np.percentile(exp_img, (1.0, 99.0))
+    if p99 > p1:
+        norm_img = np.clip((exp_img - p1) / (p99 - p1 + 1e-8) * 255.0, 0, 255).astype(np.uint8)
+    else:
+        norm_img = np.clip(exp_img * 255.0, 0, 255).astype(np.uint8)
+
+    return norm_img
+
+
+def compute_fft_spectrum(image: np.ndarray) -> np.ndarray:
+    """Compute centered 2D Fourier log-magnitude spectrum for visualization."""
+    if image.ndim == 2:
+        gray = image
+    elif image.ndim == 3 and image.shape[2] == 1:
+        gray = image[:, :, 0]
+    elif image.ndim == 3 and image.shape[2] == 4:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
+    else:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    fft = np.fft.fft2(gray.astype(np.float64))
+    fft_shift = np.fft.fftshift(fft)
+    mag = np.log1p(np.abs(fft_shift))
+    norm_mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    return norm_mag
+
+
+# ═══════════════════════════════════════════════════════════
+#  COMBINED HYBRID ENHANCEMENT
+# ═══════════════════════════════════════════════════════════
+
+def combined_enhancement(image: np.ndarray,
+                         gamma: float = 0.5,
+                         clip_limit: float = 2.0,
+                         grid_size: int = 8,
+                         sharpen_strength: float = 1.2) -> np.ndarray:
+    """
+    Multi-stage hybrid enhancement pipeline:
+      Stage 1: Gamma correction (power-law) to elevate underexposed dark shadows.
+      Stage 2: CLAHE (Contrast-Limited Adaptive Histogram Equalization) for tile-based contrast.
+      Stage 3: Unsharp masking to restore high-frequency edges and contours.
+
+    This multi-stage hybrid approach produces superior forensic clarity
+    by combining brightness expansion, local contrast normalization, and edge sharpening.
+    """
+    # Stage 1: Gamma correction
+    s1 = gamma_correction(image, gamma=gamma)
+    # Stage 2: CLAHE
+    s2 = clahe_enhancement(s1, clip_limit=clip_limit, grid_size=grid_size)
+    # Stage 3: Edge sharpening
+    s3 = unsharp_mask(s2, sigma=1.0, strength=sharpen_strength)
+    return s3
+
+
+# ═══════════════════════════════════════════════════════════
+#  UNIVERSAL COLOR & GRAYSCALE IMAGE ENHANCEMENT
+# ═══════════════════════════════════════════════════════════
+
+def enhance_color_image(image: np.ndarray,
                         method: str,
                         **kwargs) -> np.ndarray:
     """
-    Apply an enhancement method to a color image while preserving colors.
+    Apply an enhancement method to an image (supports both color BGR and grayscale).
 
-    Strategy (YCrCb color-space approach):
+    For color images:
       1. Convert BGR → YCrCb  (Y = luminance, Cr/Cb = chrominance).
       2. Apply the enhancement to the Y (brightness) channel ONLY.
       3. Merge the enhanced Y with the original Cr, Cb channels.
       4. Convert back to BGR.
 
-    This preserves the original color information while enhancing
-    brightness/contrast — exactly what CCTV enhancement needs.
+    For grayscale images:
+      Applies the enhancement directly without channel conversion.
     """
-    # Convert to YCrCb color space
-    ycrcb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2YCrCb)
-    y_channel, cr, cb = cv2.split(ycrcb)
-
     # Map method name to function
     methods = {
         "negative":   lambda img: negative_transform(img),
@@ -205,19 +329,43 @@ def enhance_color_image(image_bgr: np.ndarray,
                           img,
                           kwargs.get("sigma", 1.0),
                           kwargs.get("strength", 1.5)),
+        "combined":   lambda img: combined_enhancement(
+                          img,
+                          gamma=kwargs.get("gamma", 0.5),
+                          clip_limit=kwargs.get("clip_limit", 2.0),
+                          grid_size=kwargs.get("grid_size", 8),
+                          sharpen_strength=kwargs.get("sharpen_strength", 1.2)),
+        "homomorphic": lambda img: homomorphic_filter(
+                          img,
+                          gamma_low=kwargs.get("gamma_low", 0.5),
+                          gamma_high=kwargs.get("gamma_high", 2.0),
+                          d0=kwargs.get("d0", 30.0),
+                          c=kwargs.get("c", 1.0)),
     }
 
     if method not in methods:
-        raise ValueError(f"Unknown method: {method}")
+        raise ValueError(f"Unknown method: {method}. Supported: {list(methods.keys())}")
 
-    # Enhance only the luminance channel
+    # Normalize image dimensions defensively
+    if image.ndim == 3 and image.shape[2] == 1:
+        image = image[:, :, 0]
+    elif image.ndim == 3 and image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+
+    # If single-channel grayscale (2D array), apply directly
+    if image.ndim == 2:
+        return methods[method](image)
+
+    # If 3-channel color image, enhance only the luminance (Y) in YCrCb
+    ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+    y_channel, cr, cb = cv2.split(ycrcb)
+
+    # Enhance luminance channel
     y_enhanced = methods[method](y_channel)
 
-    # Merge and convert back
+    # Merge and convert back to BGR
     ycrcb_enhanced = cv2.merge([y_enhanced, cr, cb])
-    result_bgr = cv2.cvtColor(ycrcb_enhanced, cv2.COLOR_YCrCb2BGR)
-
-    return result_bgr
+    return cv2.cvtColor(ycrcb_enhanced, cv2.COLOR_YCrCb2BGR)
 
 
 # ═══════════════════════════════════════════════════════════

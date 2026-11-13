@@ -76,9 +76,19 @@ def compute_ssim(original: np.ndarray, compared: np.ndarray) -> float:
     """
     # Ensure grayscale
     if original.ndim == 3:
-        original = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
+        if original.shape[2] == 1:
+            original = original[:, :, 0]
+        elif original.shape[2] == 4:
+            original = cv2.cvtColor(original, cv2.COLOR_BGRA2GRAY)
+        elif original.shape[2] == 3:
+            original = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
     if compared.ndim == 3:
-        compared = cv2.cvtColor(compared, cv2.COLOR_BGR2GRAY)
+        if compared.shape[2] == 1:
+            compared = compared[:, :, 0]
+        elif compared.shape[2] == 4:
+            compared = cv2.cvtColor(compared, cv2.COLOR_BGRA2GRAY)
+        elif compared.shape[2] == 3:
+            compared = cv2.cvtColor(compared, cv2.COLOR_BGR2GRAY)
 
     img1 = original.astype(np.float64)
     img2 = compared.astype(np.float64)
